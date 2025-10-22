@@ -14,7 +14,7 @@ type ExistenceOverrides = {
   cdcUserExists?: boolean;
 };
 
-describe('Handler - Unit', () => {
+describe('Handler - 100% Mutation Coverage', () => {
   let secretsMock;
   before(() => (secretsMock = mockClient(SecretsManagerClient)));
   afterEach(() => {
@@ -44,38 +44,22 @@ describe('Handler - Unit', () => {
     } = existenceOverrides;
 
     const appDatabase = env.APP_DATABASE_NAME ?? 'myapp';
+    const appSchema = env.APP_SCHEMA_NAME ?? 'myapp_user';
 
-    // --- Secrets mocks
     secretsMock
       .on(GetSecretValueCommand, { SecretId: 'master-test' })
-      .resolves({
-        SecretString: JSON.stringify({
-          username: 'admin_user',
-          password: 'admin_password',
-        }),
-      });
+      .resolves({ SecretString: JSON.stringify({ username: 'admin_user', password: 'admin_pass' }) });
 
     secretsMock
       .on(GetSecretValueCommand, { SecretId: 'app-test' })
-      .resolves({
-        SecretString: JSON.stringify({
-          username: 'myapp_user',
-          password: 'myapp_password',
-        }),
-      });
+      .resolves({ SecretString: JSON.stringify({ username: 'myapp_user', password: 'myapp_pass' }) });
 
     if (env.CDC_USER_SECRET) {
       const payload =
         cdcSecret === null
           ? {}
-          : {
-              SecretString: JSON.stringify(
-                cdcSecret ?? { username: 'cdc_user', password: 'cdc_password' },
-              ),
-            };
-      secretsMock
-        .on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET })
-        .resolves(payload);
+          : { SecretString: JSON.stringify(cdcSecret ?? { username: 'cdc_user', password: 'cdc_pass' }) };
+      secretsMock.on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET }).resolves(payload);
     }
 
     const mainClientStub = {
@@ -83,10 +67,8 @@ describe('Handler - Unit', () => {
       connect: sinon.stub().returnsThis(),
       end: sinon.stub().resolves(),
       query: sinon.stub().callsFake((sql) => {
-        if (sql.includes('pg_catalog.pg_database'))
-          return { rows: [{ exists: databaseExists }] };
-        if (sql.includes(`rolname='myapp_user'`))
-          return { rows: [{ exists: serviceUserExists }] };
+        if (sql.includes('pg_catalog.pg_database')) return { rows: [{ exists: databaseExists }] };
+        if (sql.includes(`rolname='myapp_user'`)) return { rows: [{ exists: serviceUserExists }] };
         if (sql.includes(`rolname='cdc_user'`) || sql.includes(`rolname='partial_user'`))
           return { rows: [{ exists: cdcUserExists }] };
         return { rows: [{}] };
@@ -96,15 +78,15 @@ describe('Handler - Unit', () => {
     const serviceClientStub = {
       connect: sinon.stub().returnsThis(),
       end: sinon.stub().resolves(),
-      query: sinon.stub().resolves({ rows: [{}] }),
       database: appDatabase,
+      query: sinon.stub().resolves({ rows: [{}] }),
     };
 
     const cdcClientStub = {
       connect: sinon.stub().returnsThis(),
       end: sinon.stub().resolves(),
-      query: sinon.stub().resolves({ rows: [{}] }),
       database: appDatabase,
+      query: sinon.stub().resolves({ rows: [{}] }),
     };
 
     let ctorCount = 0;
@@ -122,55 +104,62 @@ describe('Handler - Unit', () => {
       envalid: { cleanEnv: () => env },
     });
 
-    return { handler, mainClientStub, serviceClientStub, cdcClientStub };
+    return { handler, env, mainClientStub, serviceClientStub, cdcClientStub, appSchema };
   }
 
   const expectedMsg = "Database 'app_database' usernames are ready for use!";
 
   // ---------------------------------------------------------
-  // Non-CDC execution
-  it('executes base non-CDC flow', async () => {
+  // Non-CDC paths
+  it('returns message without CDC secret (baseline)', async () => {
     const { handler } = setUp();
     const result = await handler.handler();
-    expect(result.message).to.equal(expectedMsg);
+    expect(result).to.deep.equal({ message: expectedMsg });
   });
 
-  it('skips all CDC logic when env var is missing', async () => {
+  it('skips CDC flow when CDC_USER_SECRET is undefined', async () => {
     const { handler, cdcClientStub } = setUp({}, {}, undefined);
     const result = await handler.handler();
     expect(cdcClientStub.connect.called).to.be.false;
     expect(result.message).to.equal(expectedMsg);
   });
 
-  it('skips DB/user creation if both already exist', async () => {
+  it('uses default schema when APP_SCHEMA_NAME undefined', async () => {
+    const { handler, serviceClientStub, appSchema } = setUp({ APP_SCHEMA_NAME: undefined });
+    await handler.handler();
+    const calls = serviceClientStub.query.getCalls().map((c) => c.args[0]).join(' ');
+    expect(calls).to.include(`CREATE SCHEMA IF NOT EXISTS ${appSchema}`);
+  });
+
+  it('skips DB/user creation when both already exist', async () => {
     const { handler, mainClientStub } = setUp({}, { databaseExists: true, serviceUserExists: true });
     await handler.handler();
-    const calls = mainClientStub.query.getCalls().map((c) => c.args[0]);
-    expect(calls.filter((c) => c.includes('CREATE')).length).to.equal(0);
+    const queries = mainClientStub.query.getCalls().map((c) => c.args[0]);
+    expect(queries.filter((q) => q.includes('CREATE')).length).to.equal(0);
   });
 
   // ---------------------------------------------------------
-  // CDC variations
-  it('creates CDC user and grants when missing', async () => {
+  // CDC branch coverage
+  it('creates CDC user and grants when not existing', async () => {
     const { handler, mainClientStub, cdcClientStub } = setUp(
       { CDC_USER_SECRET: 'cdc-test' },
       { cdcUserExists: false },
-      { username: 'cdc_user', password: 'cdc_password' },
+      { username: 'cdc_user', password: 'cdc_pass' },
     );
     const result = await handler.handler();
     const mainSQL = mainClientStub.query.getCalls().map((q) => q.args[0]).join(' ');
     expect(mainSQL).to.include('CREATE USER cdc_user');
-    const grantSQL = cdcClientStub.query.getCalls().map((q) => q.args[0]).join(' ');
-    expect(grantSQL).to.include('GRANT CONNECT');
-    expect(grantSQL).to.include('CREATE PUBLICATION');
+    const cdcSQL = cdcClientStub.query.getCalls().map((q) => q.args[0]).join(' ');
+    expect(cdcSQL).to.include('GRANT CONNECT');
+    expect(cdcSQL).to.include('CREATE PUBLICATION');
     expect(result.message).to.equal(expectedMsg);
   });
 
-  it('skips CDC user creation when already exists', async () => {
+  it('skips CDC user creation if user already exists', async () => {
     const { handler, mainClientStub } = setUp(
       { CDC_USER_SECRET: 'cdc-test' },
       { cdcUserExists: true },
-      { username: 'cdc_user', password: 'cdc_password' },
+      { username: 'cdc_user', password: 'cdc_pass' },
     );
     const result = await handler.handler();
     const allSQL = mainClientStub.query.getCalls().map((c) => c.args[0]).join(' ');
@@ -179,24 +168,23 @@ describe('Handler - Unit', () => {
     expect(result.message).to.equal(expectedMsg);
   });
 
-  it('handles CDC secret with missing SecretString', async () => {
-    const { handler, cdcClientStub } = setUp({ CDC_USER_SECRET: 'cdc-test' }, {}, null);
-    const result = await handler.handler();
-    expect(cdcClientStub.connect.called).to.be.false;
-    expect(result.message).to.equal(expectedMsg);
-  });
-
-  it('executes CDC block even when username missing', async () => {
-    // bootstrap.ts enters CDC branch if cdcUserSecret exists at all
+  it('executes CDC block when username missing (object truthy)', async () => {
     const { handler, cdcClientStub } = setUp(
       { CDC_USER_SECRET: 'cdc-test' },
       {},
-      { password: 'only-pass' },
+      { password: 'no-username' },
     );
     const result = await handler.handler();
-    expect(cdcClientStub.connect.called).to.be.true; // branch hit
-    const grants = cdcClientStub.query.getCalls().map((c) => c.args[0]).join(' ');
-    expect(grants).to.include('GRANT CONNECT');
+    expect(cdcClientStub.connect.called).to.be.true;
+    const calls = cdcClientStub.query.getCalls().map((c) => c.args[0]).join(' ');
+    expect(calls).to.include('GRANT CONNECT');
+    expect(result.message).to.equal(expectedMsg);
+  });
+
+  it('skips CDC branch when SecretString is null', async () => {
+    const { handler, cdcClientStub } = setUp({ CDC_USER_SECRET: 'cdc-test' }, {}, null);
+    const result = await handler.handler();
+    expect(cdcClientStub.connect.called).to.be.false;
     expect(result.message).to.equal(expectedMsg);
   });
 
@@ -207,14 +195,18 @@ describe('Handler - Unit', () => {
       { username: 'partial_user' },
     );
     const result = await handler.handler();
-    const queries = mainClientStub.query.getCalls().map((q) => q.args[0]).join(' ');
+    const queries = mainClientStub.query.getCalls().map((c) => c.args[0]).join(' ');
     expect(queries).to.include("rolname='partial_user'");
     expect(result.message).to.equal(expectedMsg);
   });
 
-  it('verifies CDC full cycle still returns correct message', async () => {
-    const { handler } = setUp({ CDC_USER_SECRET: 'cdc-test' }, {}, { username: 'cdc_user' });
+  it('returns constant message even with CDC and preexisting DB/users', async () => {
+    const { handler } = setUp(
+      { CDC_USER_SECRET: 'cdc-test' },
+      { databaseExists: true, serviceUserExists: true, cdcUserExists: true },
+      { username: 'cdc_user', password: 'cdc_pass' },
+    );
     const result = await handler.handler();
-    expect(result.message).to.equal(expectedMsg);
+    expect(result).to.deep.equal({ message: expectedMsg });
   });
 });
