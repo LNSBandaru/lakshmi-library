@@ -1119,3 +1119,140 @@ describe('Handler - Unit', () => {
 
 
 
+// **************** STEP-5 *************
+
+import {
+  GetSecretValueCommand,
+  SecretsManagerClient,
+} from '@aws-sdk/client-secrets-manager';
+import { mockClient } from 'aws-sdk-client-mock';
+import { expect } from 'chai';
+import * as proxyquire from 'proxyquire';
+import * as sinon from 'sinon';
+
+describe('Handler - Unit', () => {
+  let secretsMock;
+  before(() => {
+    secretsMock = mockClient(SecretsManagerClient);
+  });
+
+  afterEach(() => {
+    secretsMock.reset();
+    sinon.restore();
+  });
+
+  function setUp(
+    envOverrides = {},
+    cdcSecret:
+      | { username?: string; password?: string }
+      | null
+      | undefined = undefined,
+  ) {
+    const env = {
+      MASTER_USER_SECRET: 'master-test',
+      APP_USER_SECRET: 'app-test',
+      CDC_USER_SECRET: 'cdc-test',
+      APP_DATABASE_NAME: 'app_database',
+      APP_SCHEMA_NAME: 'app_schema',
+      RDS_HOST: 'example',
+      ...envOverrides,
+    };
+
+    const defaultMain = { username: 'admin_user', password: 'admin_pass' };
+    const defaultApp = { username: 'myapp_user', password: 'myapp_pass' };
+
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: 'master-test' })
+      .resolves({ SecretString: JSON.stringify(defaultMain) });
+
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: 'app-test' })
+      .resolves({ SecretString: JSON.stringify(defaultApp) });
+
+    if (env.CDC_USER_SECRET) {
+      if (cdcSecret === null) {
+        secretsMock
+          .on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET })
+          .resolves({});
+      } else {
+        secretsMock
+          .on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET })
+          .resolves({
+            SecretString: JSON.stringify(
+              cdcSecret ?? { username: 'cdc_user', password: 'cdc_pass' },
+            ),
+          });
+      }
+    }
+
+    const queryStub = sinon.stub().callsFake((sql) => {
+      if (sql.includes('pg_catalog.pg_database')) {
+        return { rows: [{ exists: false }] };
+      }
+      if (sql.includes("rolname='myapp_user'")) {
+        return { rows: [{ exists: false }] };
+      }
+      if (sql.includes("rolname='cdc_user'") || sql.includes("rolname='partial_user'")) {
+        return { rows: [{ exists: false }] };
+      }
+      return { rows: [{}] };
+    });
+
+    const fakeClient = {
+      connect: sinon.stub().returnsThis(),
+      end: sinon.stub().resolves(),
+      query: queryStub,
+      database: 'postgres',
+    };
+
+    const pgStub = sinon.stub().returns(fakeClient);
+
+    const handler = proxyquire('../../src/bootstrap', {
+      pg: { Client: pgStub },
+      envalid: { cleanEnv: () => env },
+    });
+
+    return {
+      handler,
+      pgStub,
+      queryStub,
+    };
+  }
+
+  it('should create CDC user when missing', async () => {
+    const { handler, queryStub } = setUp();
+
+    const result = await handler.handler();
+    expect(result.message).to.include('usernames are ready');
+
+    expect(queryStub.calledWithMatch("CREATE USER cdc_user")).to.be.true;
+    expect(queryStub.calledWithMatch("CREATE PUBLICATION")).to.be.true;
+  });
+
+  it('should skip CDC user creation when user already exists', async () => {
+    const { handler, queryStub } = setUp();
+
+    queryStub.onCall(4).returns({ rows: [{ exists: true }] }); // cdc_user exists
+    const result = await handler.handler();
+
+    expect(result.message).to.include('usernames are ready');
+    expect(queryStub.calledWithMatch("CREATE USER cdc_user")).to.be.false;
+  });
+
+  it('should skip CDC flow when SecretString is undefined', async () => {
+    const { handler, queryStub } = setUp({}, null);
+
+    const result = await handler.handler();
+    expect(result.message).to.include('usernames are ready');
+    expect(queryStub.calledWithMatch("CREATE USER")).to.be.false;
+    expect(queryStub.calledWithMatch("CREATE PUBLICATION")).to.be.false;
+  });
+
+  it('should still succeed when CDC secret is partially valid', async () => {
+    const { handler, queryStub } = setUp({}, { username: 'partial_user', password: 'x' });
+
+    const result = await handler.handler();
+    expect(result.message).to.include('usernames are ready');
+    expect(queryStub.calledWithMatch("CREATE USER partial_user")).to.be.true;
+  });
+});
