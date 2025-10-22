@@ -1631,3 +1631,144 @@ describe('Handler - Unit', () => {
 });
 
 
+// ********* STEP-6 ******
+// --- keep everything you already have above ---
+
+  // --------------------------------------------------------------------------
+  // Additional coverage to reach 100%
+  // --------------------------------------------------------------------------
+
+  it('creates only service user when DB already exists (no CREATE DATABASE)', async () => {
+    const { handler, mainClientStub, serviceClientStub } = setUp(
+      {},
+      { databaseExists: true, serviceUserExists: false },
+    );
+
+    await handler();
+
+    const mainQueries = mainClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(mainQueries.some(q => q.startsWith('CREATE DATABASE'))).to.equal(false);
+    expect(mainQueries).to.include(
+      `CREATE USER myapp_user WITH ENCRYPTED PASSWORD 'myapp_password'`,
+    );
+
+    // grant path still executed in app DB
+    expect(serviceClientStub.query.called).to.equal(true);
+  });
+
+  it('creates only database when service user already exists (no CREATE USER)', async () => {
+    const { handler, mainClientStub } = setUp(
+      {},
+      { databaseExists: false, serviceUserExists: true },
+    );
+
+    await handler();
+
+    const mainQueries = mainClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(mainQueries).to.include(`CREATE DATABASE app_database`);
+    expect(mainQueries.some(q => q.startsWith('CREATE USER myapp_user'))).to.equal(false);
+  });
+
+  it('closes all connections (no CDC configured)', async () => {
+    const { handler, mainClientStub, serviceClientStub, cdcClientStub } = setUp();
+
+    await handler();
+
+    expect(mainClientStub.end.calledOnce, 'main client .end()').to.equal(true);
+    expect(serviceClientStub.end.calledOnce, 'service client .end()').to.equal(true);
+    expect(cdcClientStub.end.called, 'cdc client should not have been used').to.equal(false);
+  });
+
+  it('closes all connections when CDC is enabled', async () => {
+    const { handler, mainClientStub, serviceClientStub, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      {},
+      { username: 'cdc_user', password: 'cdc_password' },
+    );
+
+    await handler();
+
+    expect(mainClientStub.end.calledOnce).to.equal(true);
+    expect(serviceClientStub.end.calledOnce).to.equal(true);
+    expect(cdcClientStub.end.calledOnce).to.equal(true);
+  });
+
+  it('constructs pg.Client thrice when CDC is enabled and uses correct CDC ctor args', async () => {
+    const { handler, ClientStub, clientCtorArgs } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      {},
+      { username: 'cdc_user', password: 'cdc_password' },
+    );
+
+    await handler();
+
+    // main, service (app db), and cdc (app db) connections
+    expect(ClientStub.callCount).to.equal(3);
+
+    // Assert exact CDC ctor args (kills object-literal/shape mutants)
+    expect(clientCtorArgs[2]).to.deep.equal({
+      database: 'app_database',
+      user: 'admin_user',
+      password: 'admin_password',
+      host: 'example',
+      port: 5432,
+    });
+  });
+
+  it('returns a success message even when CDC is enabled', async () => {
+    const { handler } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      {},
+      { username: 'cdc_user', password: 'cdc_password' },
+    );
+
+    const res = await handler();
+    expect(res).to.deep.equal({
+      message: "Database 'app_database' usernames are ready for use!",
+    });
+  });
+
+  it('uses explicit schema when APP_SCHEMA_NAME is provided', async () => {
+    const { handler, serviceClientStub } = setUp({
+      APP_SCHEMA_NAME: 'app_schema',
+    });
+
+    await handler();
+
+    const grantQueries = serviceClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(grantQueries).to.include(`CREATE SCHEMA IF NOT EXISTS app_schema`);
+    expect(grantQueries).to.include(
+      `GRANT USAGE, CREATE ON SCHEMA app_schema TO myapp_user`,
+    );
+  });
+
+  it('builds CDC publication exactly once per run', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      { cdcUserExists: false },
+      { username: 'cdc_user', password: 'cdc_password' },
+    );
+
+    await handler();
+
+    const cdcQueries = cdcClientStub.query.getCalls().map(c => c.args[0] as string);
+    const pubCreates = cdcQueries.filter(q =>
+      q.includes(`CREATE PUBLICATION IF NOT EXISTS cdc_publication FOR ALL TABLES`),
+    );
+    expect(pubCreates.length).to.equal(1);
+  });
+
+  it('constructs only main+service clients when CDC secret is absent', async () => {
+    const { handler, ClientStub } = setUp();
+
+    await handler();
+
+    expect(ClientStub.callCount).to.equal(2); // main + service
+  });
+
+// --- end of additional coverage ---
+
+});
+
+
+
