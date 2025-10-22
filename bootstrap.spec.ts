@@ -896,3 +896,226 @@ describe('Handler - Unit', () => {
 });
 
 
+// ******************* STEP-4 *************
+
+import {
+  GetSecretValueCommand,
+  SecretsManagerClient,
+} from '@aws-sdk/client-secrets-manager';
+import { mockClient } from 'aws-sdk-client-mock';
+import { expect } from 'chai';
+import * as proxyquire from 'proxyquire';
+import * as sinon from 'sinon';
+
+describe('Handler - Unit', () => {
+  let secretsMock;
+  before(() => {
+    secretsMock = mockClient(SecretsManagerClient);
+  });
+
+  afterEach(() => {
+    secretsMock.reset();
+    sinon.restore();
+  });
+
+  function setUp(
+    envOverrides = {},
+    existenceOverrides: {
+      databaseExists?: boolean;
+      serviceUserExists?: boolean;
+      cdcUserExists?: boolean;
+    } = {},
+    cdcSecret?: { username?: string; password?: string } | null,
+  ) {
+    const env = {
+      MASTER_USER_SECRET: 'master-test',
+      APP_USER_SECRET: 'app-test',
+      CDC_USER_SECRET: undefined,
+      APP_DATABASE_NAME: 'app_database',
+      APP_SCHEMA_NAME: 'app_schema',
+      RDS_HOST: 'example',
+      ...envOverrides,
+    };
+
+    const appDatabase = env.APP_DATABASE_NAME ?? 'myapp';
+    const {
+      databaseExists = false,
+      serviceUserExists = false,
+      cdcUserExists = false,
+    } = existenceOverrides;
+
+    // Secrets mocks
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: 'master-test' })
+      .resolves({
+        SecretString: JSON.stringify({
+          username: 'admin_user',
+          password: 'admin_password',
+        }),
+      });
+
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: 'app-test' })
+      .resolves({
+        SecretString: JSON.stringify({
+          username: 'myapp_user',
+          password: 'myapp_password',
+        }),
+      });
+
+    if (env.CDC_USER_SECRET) {
+      let payload: any;
+      if (cdcSecret === null) payload = {}; // SecretString missing
+      else if (cdcSecret)
+        payload = { SecretString: JSON.stringify(cdcSecret) };
+      else
+        payload = {
+          SecretString: JSON.stringify({
+            username: 'cdc_user',
+            password: 'cdc_password',
+          }),
+        };
+      secretsMock
+        .on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET })
+        .resolves(payload);
+    }
+
+    const mainClientStub = {
+      database: 'postgres',
+      connect: sinon.stub().returnsThis(),
+      end: sinon.stub().resolves(),
+      query: sinon.stub().callsFake((statement: string) => {
+        if (statement.includes('pg_catalog.pg_database'))
+          return { rows: [{ exists: databaseExists }] };
+        if (statement.includes('FROM pg_roles')) {
+          if (statement.includes(`'myapp_user'`))
+            return { rows: [{ exists: serviceUserExists }] };
+          if (statement.includes(`'cdc_user'`))
+            return { rows: [{ exists: cdcUserExists }] };
+        }
+        return { rows: [{}] };
+      }),
+    };
+
+    const serviceClientStub = {
+      database: appDatabase,
+      connect: sinon.stub().returnsThis(),
+      end: sinon.stub().resolves(),
+      query: sinon.stub().resolves({ rows: [{}] }),
+    };
+
+    const cdcClientStub = {
+      database: appDatabase,
+      connect: sinon.stub().returnsThis(),
+      end: sinon.stub().resolves(),
+      query: sinon.stub().resolves({ rows: [{}] }),
+    };
+
+    const pgStub = sinon.stub().callsFake((opts: any) => {
+      if (!opts.database) return mainClientStub;
+      if (opts.database === appDatabase) {
+        if (env.CDC_USER_SECRET && !cdcUserExists) return cdcClientStub;
+        return serviceClientStub;
+      }
+      throw new Error('Unexpected Client instantiation');
+    });
+
+    const handler = proxyquire('../../src/bootstrap', {
+      pg: { Client: pgStub },
+      envalid: { cleanEnv: () => env },
+    });
+
+    const consoleSpy = sinon.spy(console, 'log');
+    return {
+      handler,
+      pgStub,
+      mainClientStub,
+      serviceClientStub,
+      cdcClientStub,
+      consoleSpy,
+    };
+  }
+
+  const expectedMsg = `Database 'app_database' usernames are ready for use!`;
+
+  // -------------------------------------------------------------------
+
+  it('should complete happy path (no CDC)', async () => {
+    const { handler, mainClientStub } = setUp();
+    const result = await handler.handler();
+    expect(mainClientStub.connect.calledOnce).to.be.true;
+    expect(result).to.deep.equal({ message: expectedMsg });
+  });
+
+  it('should handle default DB/schema when undefined', async () => {
+    const { handler } = setUp({
+      APP_DATABASE_NAME: undefined,
+      APP_SCHEMA_NAME: undefined,
+    });
+    const result = await handler.handler();
+    expect(result).to.deep.equal({
+      message: `Database 'myapp' usernames are ready for use!`,
+    });
+  });
+
+  it('should skip creation when DB and user already exist', async () => {
+    const { handler, mainClientStub } = setUp(
+      {},
+      { databaseExists: true, serviceUserExists: true },
+    );
+    await handler.handler();
+    expect(mainClientStub.query.callCount).to.equal(2);
+  });
+
+  it('should create CDC user when missing', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-test' },
+      { cdcUserExists: false },
+    );
+    const result = await handler.handler();
+    expect(cdcClientStub.connect.calledOnce).to.be.true;
+    expect(result).to.deep.equal({ message: expectedMsg });
+  });
+
+  it('should skip CDC user creation when user already exists', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-test' },
+      { cdcUserExists: true },
+    );
+    const result = await handler.handler();
+    expect(cdcClientStub.connect.calledOnce).to.be.true;
+    expect(result).to.deep.equal({ message: expectedMsg });
+  });
+
+  it('should skip CDC flow when SecretString undefined', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-test' },
+      {},
+      null,
+    );
+    const result = await handler.handler();
+    expect(cdcClientStub.connect.called).to.be.false;
+    expect(result).to.deep.equal({ message: expectedMsg });
+  });
+
+  it('should skip CDC flow when env var CDC_USER_SECRET not set', async () => {
+    const { handler, cdcClientStub } = setUp({}, {}, undefined);
+    const result = await handler.handler();
+    expect(cdcClientStub.connect.called).to.be.false;
+    expect(result).to.deep.equal({ message: expectedMsg });
+  });
+
+  it('should still succeed when CDC secret is partially valid', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-test' },
+      {},
+      { username: 'cdc_user' }, // partial secret
+    );
+    const result = await handler.handler();
+    expect(cdcClientStub.connect.calledOnce).to.be.true;
+    expect(result).to.deep.equal({ message: expectedMsg });
+  });
+});
+
+
+
