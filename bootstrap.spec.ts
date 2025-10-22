@@ -217,3 +217,23 @@ describe('Handler – Unit', () => {
     expect(result.message).to.equal(expectedMsg);
   });
 });
+
+
+// ************* STEP-1 **********
+it('handles CDC flow even when username missing', async () => {
+  const { handler, cdcClientStub } = setUp(
+    { CDC_USER_SECRET: 'cdc-test' },
+    {},
+    { password: 'only-pass' }, // username missing
+  );
+  const result = await handler.handler();
+
+  // CDC block still executes because cdcUserSecret exists
+  expect(cdcClientStub.connect.called).to.be.true;
+
+  // The queries will still run with "undefined" username
+  const grantCalls = cdcClientStub.query.getCalls().map((c) => c.args[0]).join(' ');
+  expect(grantCalls).to.include('GRANT CONNECT ON DATABASE');
+  expect(result.message).to.equal("Database 'app_database' usernames are ready for use!");
+});
+
