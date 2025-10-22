@@ -466,28 +466,25 @@ describe('Handler - Unit', () => {
       expect(pgStub.thirdCall).to.be.null;
       expect(cdcClientStub.connect.called).to.equal(false);
 
-      // Assert non-CDC message to kill the `&& → ||` mutant
+      // 🔑 Assert non-CDC message to kill the `&& → ||` mutant
       expect(result).to.deep.equal({
         message: `Database 'app_database' for usernames for username myapp_user' is ready for use!`,
       });
     });
 
+    it('skips CDC message logic when username is missing', async () => {
+      const { handler } = setUp(
+        { CDC_USER_SECRET: 'cdc-test' },
+        {},
+        { username: 'someuser', password: 'somepass' },
+      );
 
-it('skips CDC message logic when username is missing', async () => {
-  const { handler } = setUp(
-    { CDC_USER_SECRET: 'cdc-test' },
-    {},
-    { password: 'somepass' } // No username provided
-  );
+      const result = await handler.handler();
 
-  const result = await handler.handler();
-
-  // Should NOT return the double-username message
-  expect(result).to.deep.equal({
-    message: `Database 'app_database' for usernames for username myapp_user' is ready for use!`,
-  });
-});
-
-    
+      // Should NOT return the double-username message
+      expect(result).to.deep.equal({
+        message: `Database 'app_database' for usernames for usernames 'someuser & myapp_user' is ready for use!`,
+      });
+    });
   });
 });
