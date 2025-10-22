@@ -945,3 +945,346 @@ describe('bootstrap.handler – mutation-safe unit tests', () => {
 });
 
 
+// ************** STEP-3 *********
+import {
+  GetSecretValueCommand,
+  SecretsManagerClient,
+} from '@aws-sdk/client-secrets-manager';
+import { mockClient } from 'aws-sdk-client-mock';
+import { expect } from 'chai';
+import * as proxyquire from 'proxyquire';
+import * as sinon from 'sinon';
+
+type ExistenceOverrides = {
+  databaseExists?: boolean;
+  serviceUserExists?: boolean;
+  cdcUserExists?: boolean;
+};
+
+describe('Handler - Unit', () => {
+  let secretsMock: ReturnType<typeof mockClient>;
+
+  before(() => {
+    secretsMock = mockClient(SecretsManagerClient);
+  });
+
+  afterEach(() => {
+    secretsMock.reset();
+    sinon.restore();
+  });
+
+  /**
+   * Testbed to fully control env, DB existence flags, and CDC secret shape.
+   * It also captures constructor args of pg.Client to kill the ObjectLiteral mutant.
+   */
+  function setUp(
+    envOverrides: Partial<Record<
+      | 'MASTER_USER_SECRET'
+      | 'APP_USER_SECRET'
+      | 'CDC_USER_SECRET'
+      | 'APP_DATABASE_NAME'
+      | 'APP_SCHEMA_NAME'
+      | 'RDS_HOST',
+      string | undefined
+    >> = {},
+    existenceOverrides: ExistenceOverrides = {},
+    cdcSecret:
+      | { username?: string; password?: string }
+      | null
+      | undefined = undefined,
+  ) {
+    const env = {
+      MASTER_USER_SECRET: 'master-test',
+      APP_USER_SECRET: 'app-test',
+      CDC_USER_SECRET: undefined as string | undefined,
+      APP_DATABASE_NAME: 'app_database',
+      APP_SCHEMA_NAME: 'app_schema',
+      RDS_HOST: 'example',
+      ...envOverrides,
+    };
+
+    const {
+      databaseExists = false,
+      serviceUserExists = false,
+      cdcUserExists = false,
+    } = existenceOverrides;
+
+    const appDatabase = env.APP_DATABASE_NAME ?? 'myapp'; // used to populate `.database` on stubs
+
+    // --- Secrets Mocks -------------------------------------------------------
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: env.MASTER_USER_SECRET! })
+      .resolves({
+        SecretString: JSON.stringify({
+          username: 'admin_user',
+          password: 'admin_password',
+        }),
+      });
+
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: env.APP_USER_SECRET! })
+      .resolves({
+        SecretString: JSON.stringify({
+          username: 'myapp_user',
+          password: 'myapp_password',
+        }),
+      });
+
+    if (env.CDC_USER_SECRET) {
+      // When cdcSecret === null => simulate "SecretString missing"
+      const payload =
+        cdcSecret === null
+          ? ({} as any)
+          : {
+              SecretString:
+                cdcSecret === undefined
+                  ? JSON.stringify({ username: 'cdc_user', password: 'cdc_password' })
+                  : JSON.stringify(cdcSecret),
+            };
+      secretsMock
+        .on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET })
+        .resolves(payload);
+    }
+
+    // --- pg.Client Stubs -----------------------------------------------------
+    const mainClientStub = {
+      database: 'postgres',
+      connect: sinon.stub().resolves(),
+      end: sinon.stub().resolves(),
+      query: sinon.stub().callsFake((stmt: string) => {
+        if (stmt.includes('pg_catalog.pg_database')) {
+          return { rows: [{ exists: databaseExists }] };
+        }
+        if (stmt.includes(`pg_roles WHERE rolname='myapp_user'`)) {
+          return { rows: [{ exists: serviceUserExists }] };
+        }
+        if (stmt.includes(`pg_roles WHERE rolname='cdc_user'`)) {
+          return { rows: [{ exists: cdcUserExists }] };
+        }
+        return { rows: [{}] };
+      }),
+    };
+
+    const serviceClientStub = {
+      database: appDatabase,
+      connect: sinon.stub().resolves(),
+      end: sinon.stub().resolves(),
+      query: sinon.stub().resolves({ rows: [{}] }),
+    };
+
+    const cdcClientStub = {
+      database: appDatabase,
+      connect: sinon.stub().resolves(),
+      end: sinon.stub().resolves(),
+      query: sinon.stub().resolves({ rows: [{}] }),
+    };
+
+    // Capture constructor args to kill the ObjectLiteral mutant.
+    const clientCtorArgs: any[] = [];
+    let ctorCount = 0;
+    const ClientStub = sinon.stub().callsFake((options: any) => {
+      clientCtorArgs.push(options);
+      ctorCount += 1;
+      // 1st: mainConn (no database specified)
+      if (!options || !('database' in options)) {
+        return mainClientStub as any;
+      }
+      // 2nd: serviceConn (database === appDatabase)
+      if (options.database === appDatabase && ctorCount === 2) {
+        return serviceClientStub as any;
+      }
+      // 3rd: CDC DB grants connection if CDC is enabled
+      if (options.database === appDatabase && env.CDC_USER_SECRET && ctorCount >= 3) {
+        return cdcClientStub as any;
+      }
+      return serviceClientStub as any;
+    });
+
+    // Wire the module under test with our stubs
+    const mod = proxyquire('../../src/bootstrap', {
+      pg: { Client: ClientStub },
+      envalid: { cleanEnv: () => env },
+    });
+
+    return {
+      handler: mod.handler as () => Promise<{ message: string }>,
+      mainClientStub,
+      serviceClientStub,
+      cdcClientStub,
+      ClientStub,
+      clientCtorArgs,
+      env,
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Tests
+  // --------------------------------------------------------------------------
+
+  it('creates DB and service user when missing; no CDC path', async () => {
+    const { handler, mainClientStub, serviceClientStub, clientCtorArgs } = setUp();
+
+    const res = await handler();
+    expect(res).to.deep.equal({
+      message: "Database 'app_database' usernames are ready for use!",
+    });
+
+    // DB and user creation attempted
+    const mainQueries = mainClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(mainQueries).to.include(`CREATE DATABASE app_database`);
+    expect(mainQueries).to.include(
+      `CREATE USER myapp_user WITH ENCRYPTED PASSWORD 'myapp_password'`,
+    );
+
+    // Grants path exercised (a few key ones)
+    const grantQueries = serviceClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(grantQueries).to.include(`CREATE SCHEMA IF NOT EXISTS app_schema`);
+    expect(grantQueries).to.include(`GRANT CONNECT ON DATABASE app_database TO myapp_user`);
+    expect(grantQueries).to.include(`GRANT USAGE, CREATE ON SCHEMA app_schema TO myapp_user`);
+    expect(grantQueries).to.include(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema GRANT ALL PRIVILEGES ON TABLES TO myapp_user`,
+    );
+    expect(grantQueries).to.include(`ALTER DATABASE app_database OWNER TO myapp_user`);
+
+    // Kill the ObjectLiteral mutant: assert exact constructor args for main + service
+    expect(clientCtorArgs[0]).to.deep.equal({
+      user: 'admin_user',
+      password: 'admin_password',
+      host: 'example',
+      port: 5432,
+    });
+    expect(clientCtorArgs[1]).to.deep.equal({
+      database: 'app_database',
+      user: 'admin_user',
+      password: 'admin_password',
+      host: 'example',
+      port: 5432,
+    });
+  });
+
+  it('skips CREATE DATABASE and CREATE USER when they already exist', async () => {
+    const { handler, mainClientStub } = setUp(
+      {},
+      { databaseExists: true, serviceUserExists: true },
+    );
+    await handler();
+
+    const mainQueries = mainClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(mainQueries.some(q => q.startsWith('CREATE DATABASE'))).to.equal(false);
+    expect(mainQueries.some(q => q.startsWith('CREATE USER'))).to.equal(false);
+  });
+
+  it('creates CDC user if missing and applies CDC grants & publication', async () => {
+    const { handler, mainClientStub, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      { cdcUserExists: false },
+      { username: 'cdc_user', password: 'cdc_password' },
+    );
+    await handler();
+
+    const mainQueries = mainClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(mainQueries).to.include(
+      `SELECT exists(SELECT FROM pg_roles WHERE rolname='cdc_user')`,
+    );
+    expect(mainQueries).to.include(
+      `CREATE USER cdc_user WITH ENCRYPTED PASSWORD 'cdc_password'`,
+    );
+
+    const cdcQueries = cdcClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(cdcQueries).to.include(
+      `GRANT CONNECT ON DATABASE app_database TO cdc_user`,
+    );
+    expect(cdcQueries).to.include(
+      `GRANT SELECT ON ALL TABLES IN SCHEMA app_schema TO cdc_user`,
+    );
+    expect(cdcQueries).to.include(
+      `GRANT rds_replication, rds_superuser TO cdc_user`,
+    );
+    expect(cdcQueries).to.include(
+      `CREATE PUBLICATION IF NOT EXISTS cdc_publication FOR ALL TABLES`,
+    );
+  });
+
+  it('does not create CDC user when it already exists, but still applies grants', async () => {
+    const { handler, mainClientStub, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      { cdcUserExists: true },
+      { username: 'cdc_user', password: 'cdc_password' },
+    );
+    await handler();
+
+    const mainQueries = mainClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(mainQueries).to.include(
+      `SELECT exists(SELECT FROM pg_roles WHERE rolname='cdc_user')`,
+    );
+    expect(mainQueries.some(q => q.startsWith('CREATE USER cdc_user'))).to.equal(false);
+
+    const cdcQueries = cdcClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(cdcQueries).to.include(
+      `GRANT CONNECT ON DATABASE app_database TO cdc_user`,
+    );
+    expect(cdcQueries).to.include(
+      `GRANT SELECT ON ALL TABLES IN SCHEMA app_schema TO cdc_user`,
+    );
+  });
+
+  it('skips CDC flow when CDC secret SecretString is null/undefined', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      {},
+      null, // simulate Secrets Manager returning no SecretString
+    );
+    await handler();
+    expect(cdcClientStub.connect.called).to.equal(false);
+    expect(cdcClientStub.query.called).to.equal(false);
+  });
+
+  it('skips CDC flow when username is missing', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      {},
+      { password: 'only-password' }, // username absent
+    );
+    await handler();
+    expect(cdcClientStub.connect.called).to.equal(false);
+    expect(cdcClientStub.query.called).to.equal(false);
+  });
+
+  it('skips CDC flow when password is missing', async () => {
+    const { handler, cdcClientStub } = setUp(
+      { CDC_USER_SECRET: 'cdc-secret' },
+      {},
+      { username: 'only-username' }, // password absent
+    );
+    await handler();
+    expect(cdcClientStub.connect.called).to.equal(false);
+    expect(cdcClientStub.query.called).to.equal(false);
+  });
+
+  it('derives database and schema from service secret when env values are undefined (kills schema-fallback & string-literal mutants)', async () => {
+    const { handler, serviceClientStub, clientCtorArgs } = setUp({
+      APP_DATABASE_NAME: undefined, // force: serviceSecret.username.replace('_user','') → "myapp"
+      APP_SCHEMA_NAME: undefined,   // force: schema fallback → "myapp_user"
+    });
+
+    const result = await handler();
+    // database fallback must be "myapp"
+    expect(result.message).to.equal(`Database 'myapp' usernames are ready for use!`);
+
+    // and schema fallback must be "myapp_user"
+    const svcQueries = serviceClientStub.query.getCalls().map(c => c.args[0] as string);
+    expect(svcQueries).to.include(`CREATE SCHEMA IF NOT EXISTS myapp_user`);
+    expect(svcQueries).to.include(`GRANT USAGE, CREATE ON SCHEMA myapp_user TO myapp_user`);
+
+    // also verify the second Client ctor used the derived database (helps coverage)
+    expect(clientCtorArgs[1]).to.deep.equal({
+      database: 'myapp',
+      user: 'admin_user',
+      password: 'admin_password',
+      host: 'example',
+      port: 5432,
+    });
+  });
+});
+
+
