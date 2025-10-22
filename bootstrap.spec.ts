@@ -1256,3 +1256,7 @@ describe('Handler - Unit', () => {
     expect(queryStub.calledWithMatch("CREATE USER partial_user")).to.be.true;
   });
 });
+
+
+
+// ******************* STEP-6 *******************
