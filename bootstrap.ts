@@ -1,3 +1,4 @@
+
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
@@ -89,8 +90,8 @@ export const handler = async () => {
       );
     }
 
-// Validate the *cdc user*, if the user does not exist, invoke the create new user
- if (cdcUserSecret) {
+    // Validate the *cdc user*, if the user does not exist, invoke the create new user
+    if (cdcUserSecret) {
       const {
         rows: [{ exists: cdcUserExists }],
       } = await query(
@@ -155,7 +156,7 @@ export const handler = async () => {
     await serviceConn.end();
   }
 
- if (cdcUserSecret) {
+  if (cdcUserSecret) {
     // Minimal DB-level grants for CDC user on the PG DB
     const cdcDbConn = new Client({
       database,
@@ -189,10 +190,7 @@ export const handler = async () => {
     }
   }
 
-  let message = `Database '${database}' for usernames for username ${serviceSecret.username}' is ready for use!`;
-  // Stryker disable next-line OptionalChaining
-  if (cdcUserSecret)
-    message = `Database '${database}' for usernames for usernames '${cdcUserSecret.username} & ${serviceSecret.username}' is ready for use!`;
+  const message = `Database '${database}' usernames are ready for use!`;
 
   return {
     message,
