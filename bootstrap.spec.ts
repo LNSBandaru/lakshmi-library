@@ -238,7 +238,7 @@ describe('Handler - Unit', () => {
 
       // Verify lambda result (string matches current bootstrap.ts)
       expect(result).to.deep.equal({
-        message: `Database 'app_database' for usernames for username myapp_user' is ready for use!`,
+        message: `Database 'app_database' usernames are ready for use!`,
       });
     });
 
@@ -330,7 +330,7 @@ describe('Handler - Unit', () => {
 
       // Verify lambda result.
       expect(result).to.deep.equal({
-        message: `Database 'myapp' for usernames for username myapp_user' is ready for use!`,
+        message: "Database 'myapp' usernames are ready for use!",
       });
     });
 
@@ -390,7 +390,7 @@ describe('Handler - Unit', () => {
       expect(consoleSpy.callCount).to.equal(22);
 
       expect(result).to.deep.equal({
-        message: `Database 'app_database' for usernames for usernames 'cdc_user & myapp_user' is ready for use!`,
+        message: `Database 'app_database' usernames are ready for use!`,
       });
     });
 
@@ -466,9 +466,9 @@ describe('Handler - Unit', () => {
       expect(pgStub.thirdCall).to.be.null;
       expect(cdcClientStub.connect.called).to.equal(false);
 
-      // 🔑 Assert non-CDC message to kill the `&& → ||` mutant
+      // Assert non-CDC message to kill the `&& → ||` mutant
       expect(result).to.deep.equal({
-        message: `Database 'app_database' for usernames for username myapp_user' is ready for use!`,
+        message: `Database 'app_database' usernames are ready for use!`,
       });
     });
 
@@ -483,7 +483,7 @@ describe('Handler - Unit', () => {
 
       // Should NOT return the double-username message
       expect(result).to.deep.equal({
-        message: `Database 'app_database' for usernames for usernames 'someuser & myapp_user' is ready for use!`,
+        message: `Database 'app_database' usernames are ready for use!`,
       });
     });
   });
