@@ -1,4 +1,3 @@
-
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
@@ -15,15 +14,20 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
   beforeEach(() => {
     consoleErr = sinon.stub(console, 'error'); // only stub once
   });
-  
+
   afterEach(() => {
+    expect(consoleErr).not.to.be.undefined;
     secretsMock.reset();
     sinon.restore();
   });
 
   function setup(
     envOverrides: Record<string, any> = {},
-    existence: { databaseExists?: boolean; serviceUserExists?: boolean; cdcUserExists?: boolean } = {},
+    existence: {
+      databaseExists?: boolean;
+      serviceUserExists?: boolean;
+      cdcUserExists?: boolean;
+    } = {},
     cdcSecret: any = undefined,
     simulateError?: 'main' | 'service' | 'cdc',
   ) {
@@ -51,14 +55,21 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
     secretsMock
       .on(GetSecretValueCommand, { SecretId: env.APP_USER_SECRET })
       .resolves({
-        SecretString: JSON.stringify({ username: 'myapp_user', password: 'mypw' }),
+        SecretString: JSON.stringify({
+          username: 'myapp_user',
+          password: 'mypw',
+        }),
       });
 
     if (env.CDC_USER_SECRET) {
       const payload =
         cdcSecret === null
           ? {}
-          : { SecretString: JSON.stringify(cdcSecret ?? { username: 'cdc_user', password: 'cdc_pw' }) };
+          : {
+              SecretString: JSON.stringify(
+                cdcSecret ?? { username: 'cdc_user', password: 'cdc_pw' },
+              ),
+            };
       secretsMock
         .on(GetSecretValueCommand, { SecretId: env.CDC_USER_SECRET })
         .resolves(payload);
@@ -73,9 +84,12 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
           await new Promise((r) => setTimeout(r, 5));
           throw new Error('main query failed');
         }
-        if (sql.includes('pg_catalog.pg_database')) return { rows: [{ exists: databaseExists }] };
-        if (sql.includes("rolname='myapp_user'")) return { rows: [{ exists: serviceUserExists }] };
-        if (sql.includes("rolname='cdc_user'")) return { rows: [{ exists: cdcUserExists }] };
+        if (sql.includes('pg_catalog.pg_database'))
+          return { rows: [{ exists: databaseExists }] };
+        if (sql.includes("rolname='myapp_user'"))
+          return { rows: [{ exists: serviceUserExists }] };
+        if (sql.includes("rolname='cdc_user'"))
+          return { rows: [{ exists: cdcUserExists }] };
         return { rows: [{}] };
       }),
     };
@@ -84,7 +98,8 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       connect: sinon.stub().resolves(),
       end: sinon.stub().resolves(),
       query: sinon.stub().callsFake((sql: string) => {
-        if (simulateError === 'service') return Promise.reject(new Error('service query fail'));
+        if (simulateError === 'service')
+          return Promise.reject(new Error('service query fail'));
         return { rows: [{}] };
       }),
     };
@@ -93,7 +108,8 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       connect: sinon.stub().resolves(),
       end: sinon.stub().resolves(),
       query: sinon.stub().callsFake((sql: string) => {
-        if (simulateError === 'cdc') return Promise.reject(new Error('cdc query fail'));
+        if (simulateError === 'cdc')
+          return Promise.reject(new Error('cdc query fail'));
         return { rows: [{}] };
       }),
     };
@@ -108,7 +124,7 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       return service;
     });
 
-    const consoleErr = sinon.stub(console, 'error');
+    // const consoleErr = sinon.stub(console, 'error');
 
     const mod = proxyquire('../../src/bootstrap', {
       pg: { Client: ClientStub },
@@ -160,7 +176,12 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       { username: 'cdc_user', password: 'cdc_pw' },
     );
     await handler();
-    expect(main.query.getCalls().map(c => c.args[0]).join()).to.include("rolname='cdc_user'");
+    expect(
+      main.query
+        .getCalls()
+        .map((c) => c.args[0])
+        .join(),
+    ).to.include("rolname='cdc_user'");
     expect(cdc.query.callCount).to.be.greaterThan(1);
   });
 
@@ -190,7 +211,7 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
   // --- Service query throws ---
   it('executes finally for service query throw', async () => {
     const { handler, main, service } = setup({}, {}, undefined, 'service');
-    await handler().catch(() => {});  // swallow rejection
+    await handler().catch((e) => {console.log(e);}); // swallow rejection
     expect(main.end.calledOnce).to.be.true;
     expect(service.end.calledOnce).to.be.true;
   });
@@ -203,7 +224,7 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       { username: 'cdc_user', password: 'cdc_pw' },
       'cdc',
     );
-    await handler().catch(() => {});  // swallow rejection
+    await handler().catch((e) => {console.log(e);}); // swallow rejection
     expect(main.end.calledOnce).to.be.true;
     expect(service.end.calledOnce).to.be.true;
     expect(cdc.end.calledOnce).to.be.true;
@@ -211,17 +232,29 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
 
   // --- Database & service user existence toggles ---
   it('creates DB only when missing and user when missing', async () => {
-    const { handler, main } = setup({}, { databaseExists: false, serviceUserExists: false });
+    const { handler, main } = setup(
+      {},
+      { databaseExists: false, serviceUserExists: false },
+    );
     await handler();
-    const sql = main.query.getCalls().map(c => c.args[0]).join(' ');
+    const sql = main.query
+      .getCalls()
+      .map((c) => c.args[0])
+      .join(' ');
     expect(sql).to.include('CREATE DATABASE');
     expect(sql).to.include('CREATE USER myapp_user');
   });
 
   it('skips DB & user creation when already exists', async () => {
-    const { handler, main } = setup({}, { databaseExists: true, serviceUserExists: true });
+    const { handler, main } = setup(
+      {},
+      { databaseExists: true, serviceUserExists: true },
+    );
     await handler();
-    const sql = main.query.getCalls().map(c => c.args[0]).join(' ');
+    const sql = main.query
+      .getCalls()
+      .map((c) => c.args[0])
+      .join(' ');
     expect(sql).not.to.include('CREATE DATABASE');
     expect(sql).not.to.include('CREATE USER myapp_user');
   });
@@ -234,15 +267,17 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       message: "Database 'app_db' usernames are ready for use!",
     });
   });
-  
+
   it('logs error and still executes finally when service query throws', async () => {
     const { handler, service } = setup({}, {}, undefined, 'service');
-    const consoleErr = sinon.stub(console, 'error');
-  
+    // const consoleErr = sinon.stub(console, 'error');
+
     await handler(); // no .catch needed since handler no longer throws
-  
+
     expect(consoleErr.calledOnce).to.be.true;
-    expect(consoleErr.firstCall.args[0]).to.include('[bootstrap.serviceConn] query failure:');
+    expect(consoleErr.firstCall.args[0]).to.include(
+      '[bootstrap.serviceConn] query failure:',
+    );
     expect(service.end.calledOnce).to.be.true;
   });
 
@@ -253,12 +288,14 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       { username: 'cdc_user', password: 'cdc_pw' },
       'cdc',
     );
-    const consoleErr = sinon.stub(console, 'error');
-  
+    // const consoleErr = sinon.stub(console, 'error');
+
     await handler();
-  
+
     expect(consoleErr.calledOnce).to.be.true;
-    expect(consoleErr.firstCall.args[0]).to.include('[bootstrap.cdcDbConn] query failure:');
+    expect(consoleErr.firstCall.args[0]).to.include(
+      '[bootstrap.cdcDbConn] query failure:',
+    );
     expect(cdc.end.calledOnce).to.be.true;
   });
 });
