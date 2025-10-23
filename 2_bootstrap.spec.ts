@@ -374,4 +374,21 @@ describe('bootstrap.handler - 100% Code & Mutation Coverage', () => {
   
   // ----
 
+
+
+
+  it('executes CREATE SCHEMA IF NOT EXISTS statement correctly', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  // Gather all executed SQL statements for serviceConn
+  const sqls = service.query.getCalls().map(c => c.args[0]);
+
+  // Verify exact CREATE SCHEMA command was executed
+  const createSchemaQuery = sqls.find(q => q.includes('CREATE SCHEMA IF NOT EXISTS app_schema'));
+  expect(createSchemaQuery).to.not.be.undefined;
+  expect(createSchemaQuery).to.include('CREATE SCHEMA IF NOT EXISTS app_schema');
+});
+
+
 });
