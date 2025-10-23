@@ -229,4 +229,31 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       message: "Database 'app_db' usernames are ready for use!",
     });
   });
+  
+  it('logs error and still executes finally when service query throws', async () => {
+    const { handler, service } = setup({}, {}, undefined, 'service');
+    const consoleErr = sinon.stub(console, 'error');
+  
+    await handler(); // no .catch needed since handler no longer throws
+  
+    expect(consoleErr.calledOnce).to.be.true;
+    expect(consoleErr.firstCall.args[0]).to.include('[bootstrap.serviceConn] query failure:');
+    expect(service.end.calledOnce).to.be.true;
+  });
+
+  it('logs error and executes finally when CDC query throws', async () => {
+    const { handler, cdc } = setup(
+      { CDC_USER_SECRET: 'cdc' },
+      {},
+      { username: 'cdc_user', password: 'cdc_pw' },
+      'cdc',
+    );
+    const consoleErr = sinon.stub(console, 'error');
+  
+    await handler();
+  
+    expect(consoleErr.calledOnce).to.be.true;
+    expect(consoleErr.firstCall.args[0]).to.include('[bootstrap.cdcDbConn] query failure:');
+    expect(cdc.end.calledOnce).to.be.true;
+  });
 });
