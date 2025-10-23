@@ -405,6 +405,23 @@ it('executes CREATE SCHEMA IF NOT EXISTS statement with correct schema', async (
   expect(hasCreateSchema, 'Expected CREATE SCHEMA IF NOT EXISTS app_schema').to.be.true;
 });
 
+
+  // ------------------------- START
+  it('executes all key service SQL statements correctly', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  const sqls = service.query.getCalls().map(c => String(c.args[0])).join(' ');
+
+  [
+    'CREATE SCHEMA IF NOT EXISTS app_schema',
+    'CREATE EXTENSION IF NOT EXISTS pg_trgm',
+    'CREATE EXTENSION IF NOT EXISTS intarray',
+    'GRANT USAGE, CREATE ON SCHEMA app_schema TO myapp_user',
+    'ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema',
+  ].forEach(expected => expect(sqls).to.include(expected));
+});
+
   
   
 });
