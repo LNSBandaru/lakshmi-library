@@ -303,4 +303,21 @@ describe('bootstrap.handler - 100% Code & Mutation Coverage', () => {
     expect(dbArg).not.to.include('_user');
   });
 
+  it('executes all key serviceConn SQL statements including CREATE and GRANT queries', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  // collect executed SQL queries
+  const queries = service.query.getCalls().map(c => c.args[0]).join(' ');
+
+  // Explicitly verify the exact statements so Stryker cannot mutate them away
+  expect(queries).to.include('CREATE SCHEMA IF NOT EXISTS app_schema');
+  expect(queries).to.include('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+  expect(queries).to.include('CREATE EXTENSION IF NOT EXISTS intarray');
+  expect(queries).to.include('GRANT CREATE ON DATABASE app_db TO myapp_user');
+  expect(queries).to.include('ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema GRANT ALL PRIVILEGES ON TABLES TO myapp_user');
+  expect(queries).to.include('ALTER DATABASE app_db OWNER TO myapp_user');
+});
+
+
 });
