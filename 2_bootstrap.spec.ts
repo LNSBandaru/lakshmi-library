@@ -264,4 +264,30 @@ describe('bootstrap.handler - 100% Code & Mutation Coverage', () => {
       message: "Database 'app_db' usernames are ready for use!",
     });
   });
+  
+  it('derives database name by replacing "_user" in service username', async () => {
+    const { handler, service, ctorArgs } = setup({
+      APP_DATABASE_NAME: undefined,
+      APP_SCHEMA_NAME: undefined,
+    });
+  
+    const res = await handler();
+    expect(res.message).to.include('myapp'); // fallback check
+    // explicit verification of the replacement logic
+    const dbArg = ctorArgs[1].database;
+    expect(dbArg).to.equal('myapp');           // confirms "_user" removed
+    expect(dbArg).not.to.include('_user');     // kills both 56:61 and 56:70 string mutants
+  });
+
+  it('executes REVOKE CREATE ON SCHEMA public FROM PUBLIC', async () => {
+    const { handler, service } = setup();
+    await handler();
+    const sqls = service.query.getCalls().map(c => c.args[0]);
+    // verify exact revoke string used
+    const revokeStmt = sqls.find(q => q.includes('REVOKE CREATE ON SCHEMA public FROM PUBLIC'));
+    expect(revokeStmt).to.not.be.undefined;
+    expect(revokeStmt).to.include('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
+  });
+
+
 });
