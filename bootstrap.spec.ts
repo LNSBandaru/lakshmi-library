@@ -10,7 +10,12 @@ import * as sinon from 'sinon';
 
 describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
   const secretsMock = mockClient(SecretsManagerClient);
+  let consoleErr: sinon.SinonStub;
 
+  beforeEach(() => {
+    consoleErr = sinon.stub(console, 'error'); // only stub once
+  });
+  
   afterEach(() => {
     secretsMock.reset();
     sinon.restore();
