@@ -1,4 +1,5 @@
 
+
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
@@ -72,8 +73,14 @@ describe('bootstrap.handler - Full Coverage Suite', () => {
       database: 'postgres',
       connect: sinon.stub().resolves(),
       end: sinon.stub().resolves(),
-      query: sinon.stub().callsFake((sql: string) => {
-        if (simulateError === 'main') return Promise.reject(new Error('main query failed'));
+      query: sinon.stub().callsFake(async (sql: string) => {
+        if (simulateError === 'main') {
+          // await new Promise((r) => setImmediate(r));
+          // throw new Error('main query failed');
+          return new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('main query faild')), 10);
+          });
+        }
         if (sql.includes('pg_catalog.pg_database')) return { rows: [{ exists: databaseExists }] };
         if (sql.includes("rolname='myapp_user'")) return { rows: [{ exists: serviceUserExists }] };
         if (sql.includes("rolname='cdc_user'")) return { rows: [{ exists: cdcUserExists }] };
@@ -210,6 +217,7 @@ describe('bootstrap.handler - Full Coverage Suite', () => {
   it('ensures .end() calls execute even if main query throws', async () => {
     const { handler, main, service } = setup({}, {}, undefined, 'main');
     await handler().catch(() => {});
+
     await new Promise((r) => setImmediate(r));
     expect(main.end.calledOnce).to.be.true;
     expect(service.end.calledOnce).to.be.true;
