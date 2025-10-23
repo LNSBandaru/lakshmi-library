@@ -105,6 +105,8 @@ export const handler = async () => {
         );
       }
     }
+  } catch (error) {
+    console.error('[bootstrap.mainConn] query failure:', error.message);
   } finally {
     await mainConn.end();
   }
