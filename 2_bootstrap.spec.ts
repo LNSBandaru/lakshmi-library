@@ -422,6 +422,20 @@ it('executes CREATE SCHEMA IF NOT EXISTS statement with correct schema', async (
   ].forEach(expected => expect(sqls).to.include(expected));
 });
 
-  
+  it('verifies CREATE SCHEMA IF NOT EXISTS query executes correctly', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  // Capture all SQL queries executed in serviceConn
+  const executedSQLs = service.query.getCalls().map(c => String(c.args[0]));
+
+  // ✅ Assert that the expected CREATE SCHEMA statement was executed
+  const createSchemaStmt = executedSQLs.find(q =>
+    q.includes('CREATE SCHEMA IF NOT EXISTS app_schema')
+  );
+  expect(createSchemaStmt).to.not.be.undefined;
+  expect(createSchemaStmt).to.include('CREATE SCHEMA IF NOT EXISTS app_schema');
+});
+
   
 });
