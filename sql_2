@@ -1,0 +1,148 @@
+To find the Cluster Parameter Group Family
+
+aws rds describe-db-cluster-parameter-groups \
+    --db-cluster-parameter-group-name default.aurora-postgresql16 \
+    --query "DBClusterParameterGroups[0].DBParameterGroupFamily" \
+    --output text
+
+🔍 What You Currently Have
+
+Each Aurora cluster (e.g. agreements-postgres-qa, auth-postgres-qa, etc.) is running:
+
+Engine: aurora-postgresql
+
+Version: 16.1 → family = aurora-postgresql16
+
+Parameter Groups: mostly using default.aurora-postgresql16
+
+✅ That’s good news — Aurora PostgreSQL 16.x fully supports logical replication via the rds.logical_replication parameter (you no longer need to manually set wal_level).
+
+🎯 Goal
+
+You want to enable CDC Publication for one or more Aurora clusters (e.g. ordering-postgres-qa, support-postgres-qa, etc.) starting from zero — fully ready for OpenFlow / Snowflake ingestion.
+
+✅ Step-by-Step Implementation (PowerShell / AWS CLI)
+1. Choose which cluster(s) need CDC
+
+Let’s say you’re enabling CDC for:
+
+ordering-postgres-qa
+
+support-postgres-qa
+
+Each one needs:
+
+    A custom Cluster Parameter Group
+    A custom Instance Parameter Group
+
+Logical replication enabled
+
+2. Create cluster parameter groups
+
+Run this once for each cluster (change the name per cluster):
+
+aws rds create-db-cluster-parameter-group `
+  --db-cluster-parameter-group-name ordering-pg-cdc-cluster `
+  --db-parameter-group-family aurora-postgresql16 `
+  --description "CDC Logical Replication (ordering cluster)"
+
+aws rds create-db-cluster-parameter-group `
+  --db-cluster-parameter-group-name support-pg-cdc-cluster `
+  --db-parameter-group-family aurora-postgresql16 `
+  --description "CDC Logical Replication (support cluster)"
+
+3. Create instance parameter groups
+aws rds create-db-parameter-group `
+  --db-parameter-group-name ordering-pg-cdc-instance `
+  --db-parameter-group-family aurora-postgresql16 `
+  --description "CDC Instance Parameter Group (ordering)"
+
+aws rds create-db-parameter-group `
+  --db-parameter-group-name support-pg-cdc-instance `
+  --db-parameter-group-family aurora-postgresql16 `
+  --description "CDC Instance Parameter Group (support)"
+
+4. Set logical replication parameters
+
+For each cluster PG:
+
+aws rds modify-db-cluster-parameter-group `
+  --db-cluster-parameter-group-name ordering-pg-cdc-cluster `
+  --parameters `
+    "ParameterName=rds.logical_replication,ParameterValue=1,ApplyMethod=pending-reboot" `
+    "ParameterName=max_replication_slots,ParameterValue=10,ApplyMethod=pending-reboot" `
+    "ParameterName=max_wal_senders,ParameterValue=10,ApplyMethod=pending-reboot"
+
+
+Same for the support cluster PG.
+
+5. Attach parameter groups
+
+Attach cluster-level PG:
+
+aws rds modify-db-cluster `
+  --db-cluster-identifier ordering-postgres-qa `
+  --db-cluster-parameter-group-name ordering-pg-cdc-cluster `
+  --apply-immediately
+
+
+Attach instance-level PG to each DB instance:
+
+aws rds modify-db-instance `
+  --db-instance-identifier ordering-postgres-1-qa `
+  --db-parameter-group-name ordering-pg-cdc-instance `
+  --apply-immediately
+
+aws rds modify-db-instance `
+  --db-instance-identifier ordering-postgres-2-qa `
+  --db-parameter-group-name ordering-pg-cdc-instance `
+  --apply-immediately
+
+6. Reboot (Reader → Failover pattern)
+
+Step A: Reboot a reader first
+
+aws rds reboot-db-instance `
+  --db-instance-identifier ordering-postgres-2-qa `
+  --region us-east-1
+
+
+Step B: Verify
+
+SHOW rds.logical_replication;
+SHOW wal_level;
+
+
+✅ Expect: on / logical
+
+Step C: Fail over cluster
+
+aws rds failover-db-cluster `
+  --db-cluster-identifier ordering-postgres-qa `
+  --region us-east-1
+
+7. Create CDC user
+CREATE ROLE cdc_user WITH LOGIN REPLICATION PASSWORD 'StrongPass!';
+GRANT CONNECT ON DATABASE postgres TO cdc_user;
+GRANT USAGE ON SCHEMA public TO cdc_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO cdc_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO cdc_user;
+
+8. Create Publication
+CREATE PUBLICATION openflow_publication FOR ALL TABLES;
+
+
+(Optional for slot-based streaming)
+
+SELECT * FROM pg_create_logical_replication_slot('openflow_slot','pgoutput');
+
+9. Verify
+SHOW rds.logical_replication;
+SHOW wal_level;
+SELECT * FROM pg_publication;
+SELECT * FROM pg_replication_slots;
+
+✅ Outcome
+Cluster	CDC Enabled	Publication	Slot	Reboot Impact
+ordering-postgres-qa	✅	openflow_publication	openflow_slot	~1 min (controlled failover)
+support-postgres-qa	✅	openflow_publication	openflow_slot	~1 min (controlled failover)
