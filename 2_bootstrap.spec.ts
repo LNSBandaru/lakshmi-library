@@ -342,5 +342,36 @@ describe('bootstrap.handler - 100% Code & Mutation Coverage', () => {
   expect(queries).to.include('ALTER DATABASE app_db OWNER TO myapp_user');
 });
 
+  // ----
+  it('executes all expected SQL statements in serviceConn (CREATE, GRANT, REVOKE)', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  // Collect all executed SQL statements
+  const queries = service.query.getCalls().map(c => c.args[0]).join(' ');
+
+  // ✅ Verify each SQL literal explicitly
+  expect(queries).to.include('CREATE SCHEMA IF NOT EXISTS app_schema');
+  expect(queries).to.include('GRANT CONNECT ON DATABASE app_db TO myapp_user');
+  expect(queries).to.include('CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA app_schema CASCADE');
+  expect(queries).to.include('CREATE EXTENSION IF NOT EXISTS intarray SCHEMA app_schema CASCADE');
+  expect(queries).to.include('REVOKE ALL ON DATABASE app_db FROM PUBLIC');
+  expect(queries).to.include('GRANT USAGE, CREATE ON SCHEMA app_schema TO myapp_user');
+  expect(queries).to.include(
+    'ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema GRANT ALL PRIVILEGES ON TABLES TO myapp_user'
+  );
+  expect(queries).to.include('GRANT ALL PRIVILEGES on DATABASE app_db to myapp_user');
+  expect(queries).to.include('ALTER DATABASE app_db OWNER TO myapp_user');
+});
+
+  it('uses explicit schema when APP_SCHEMA_NAME is provided', async () => {
+  const { handler, service } = setup({ APP_SCHEMA_NAME: 'custom_schema' });
+  await handler();
+  const sqls = service.query.getCalls().map(c => c.args[0]).join(' ');
+  expect(sqls).to.include('CREATE SCHEMA IF NOT EXISTS custom_schema');
+});
+
+  
+  // ----
 
 });
