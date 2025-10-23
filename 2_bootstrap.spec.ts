@@ -289,5 +289,18 @@ describe('bootstrap.handler - 100% Code & Mutation Coverage', () => {
     expect(revokeStmt).to.include('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
   });
 
+  it('derives database name by replacing "_user" in service username', async () => {
+    const { handler, service, ctorArgs } = setup({
+      APP_DATABASE_NAME: undefined,
+      APP_SCHEMA_NAME: undefined,
+    });
+  
+    const res = await handler();
+    expect(res.message).to.include('myapp');
+    expect(service.query.called).to.be.true; // now 'service' is used
+    const dbArg = ctorArgs[1].database;
+    expect(dbArg).to.equal('myapp');
+    expect(dbArg).not.to.include('_user');
+  });
 
 });
