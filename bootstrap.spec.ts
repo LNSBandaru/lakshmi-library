@@ -185,7 +185,7 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
   // --- Service query throws ---
   it('executes finally for service query throw', async () => {
     const { handler, main, service } = setup({}, {}, undefined, 'service');
-    await handler();
+    await handler().catch(() => {});  // swallow rejection
     expect(main.end.calledOnce).to.be.true;
     expect(service.end.calledOnce).to.be.true;
   });
@@ -198,7 +198,7 @@ describe('bootstrap.handler - 100% Code & Branch Coverage', () => {
       { username: 'cdc_user', password: 'cdc_pw' },
       'cdc',
     );
-    await handler();
+    await handler().catch(() => {});  // swallow rejection
     expect(main.end.calledOnce).to.be.true;
     expect(service.end.calledOnce).to.be.true;
     expect(cdc.end.calledOnce).to.be.true;
