@@ -437,5 +437,24 @@ it('executes CREATE SCHEMA IF NOT EXISTS statement with correct schema', async (
   expect(createSchemaStmt).to.include('CREATE SCHEMA IF NOT EXISTS app_schema');
 });
 
+
+  // ------------------------ STEP-2
+  it('executes both CREATE SCHEMA IF NOT EXISTS statements with correct schema names', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  // collect all SQL statements executed in serviceConn
+  const sqls = service.query.getCalls().map(c => String(c.args[0]));
+
+  // 🔍 verify both CREATE SCHEMA statements ran as expected
+  const firstCreate = sqls.find(q => q.includes('CREATE SCHEMA IF NOT EXISTS app_schema'));
+  const secondCreate = sqls.filter(q => q.includes('CREATE SCHEMA IF NOT EXISTS app_schema')).length;
+
+  // assertions
+  expect(firstCreate, 'Expected CREATE SCHEMA IF NOT EXISTS query to exist').to.not.be.undefined;
+  expect(secondCreate, 'Expected at least 2 CREATE SCHEMA queries').to.be.at.least(2);
+});
+
+
   
 });
