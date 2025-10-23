@@ -154,6 +154,8 @@ export const handler = async () => {
       `GRANT ALL PRIVILEGES on DATABASE ${database} to ${username}`,
     );
     await query(serviceConn, `ALTER DATABASE ${database} OWNER TO ${username}`);
+  } catch (error) {
+    console.error('[bootstrap.serviceConn] query failure:', error.message);
   } finally {
     await serviceConn.end();
   }
@@ -187,6 +189,8 @@ export const handler = async () => {
         cdcDbConn,
         `CREATE PUBLICATION IF NOT EXISTS cdc_publication FOR ALL TABLES`,
       );
+    } catch(error) {
+      console.error('[bootstrap.cdcDbConn] query failure:', err.message);
     } finally {
       await cdcDbConn.end();
     }
