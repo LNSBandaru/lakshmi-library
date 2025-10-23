@@ -319,5 +319,28 @@ describe('bootstrap.handler - 100% Code & Mutation Coverage', () => {
   expect(queries).to.include('ALTER DATABASE app_db OWNER TO myapp_user');
 });
 
+  it('executes all expected SQL commands in serviceConn block (CREATE, GRANT, REVOKE)', async () => {
+  const { handler, service } = setup();
+  await handler();
+
+  // Collect all SQL executed by serviceConn
+  const queries = service.query.getCalls().map(c => c.args[0]).join(' ');
+
+  // Verify CREATE SCHEMA commands
+  expect(queries).to.include('CREATE SCHEMA IF NOT EXISTS app_schema');
+
+  // Verify GRANT statements
+  expect(queries).to.include('GRANT CONNECT ON DATABASE app_db TO myapp_user');
+  expect(queries).to.include('GRANT CREATE ON DATABASE app_db TO myapp_user');
+  expect(queries).to.include('GRANT ALL PRIVILEGES on DATABASE app_db to myapp_user');
+
+  // Verify REVOKE statement
+  expect(queries).to.include('REVOKE ALL ON DATABASE app_db FROM PUBLIC');
+
+  // Verify ALTER statements
+  expect(queries).to.include('ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema GRANT ALL PRIVILEGES ON TABLES TO myapp_user');
+  expect(queries).to.include('ALTER DATABASE app_db OWNER TO myapp_user');
+});
+
 
 });
