@@ -1,3 +1,4 @@
+
 import { Audit } from '@securustablets/libraries.audit-history';
 import {
   SchemeFactory,
@@ -134,3 +135,21 @@ export class TabletRequestService {
     });
   }
 }
+
+
+"scripts": {
+  "db:init": "pg schema:apply && audit-history schema:apply && pg schema:migrate",
+  "schema:init": "jsp schema:init --annotations readonly context constrain validate",
+  "start": "yarn run -T ts-node --type-check src/main.ts",
+  "prestart": "yarn run swagger && yarn run schema:init",
+  "clean": "rimraf dist/",
+  "check": "yarn run lint -- --fix && yarn run tsc",
+  "swagger": "tsoa swagger",
+
+  // ✅ Updated build script with swagger.json copy step
+  "build": "yarn run build-tsc && yarn run client:generate && cp swagger.json dist/swagger.json",
+
+  "build-tsc": "yarn run -T tsc -b -v && yarn run swagger && yarn run schema:init",
+  "client:generate": "yarn run swagger && mkdir -p client && cp .npmrc client && swagger-codegen service-client:generate --yarn --serviceName tablet-request"
+}
+
