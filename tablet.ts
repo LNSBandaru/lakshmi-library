@@ -153,3 +153,32 @@ export class TabletRequestService {
   "client:generate": "yarn run swagger && mkdir -p client && cp .npmrc client && swagger-codegen service-client:generate --yarn --serviceName tablet-request"
 }
 
+
+variables:
+  IMAGE: gitlab-ci/nodejs:20
+  DOCKER_COMPOSE_TEST_COMMAND: /wait && yarn workspace tablet-request-task db:init && yarn integration-test
+
+default:
+  image: $ECR_REGISTRY/$IMAGE
+  before_script:
+    # Disable Corepack auto-activation
+    - corepack disable
+    # Install stable Yarn 1.x globally
+    - npm install -g yarn@1.22.19
+    # Verify installation
+    - yarn --version
+    # Install all project dependencies
+    - yarn install --frozen-lockfile
+
+include:
+  project: tablet_platform/ucc-devops/gitlab-ci-templates
+  file: /yarn-monorepo/v3/gitlab-ci.yml
+
+deploy:
+  extends: .deploy
+  trigger:
+    project: tablet_platform/ucc-devops/environments/dev
+  variables:
+    DEPLOY_APP: services.tablet-request
+    DEPLOY_CHANNEL: latest
+
